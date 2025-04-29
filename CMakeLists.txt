@@ -19,7 +19,10 @@ add_executable(cs564project main.cpp
         visualizer.h
         delaunay_triangulation.h
         typedef.cpp
+        quick_hull.cpp
+        quick_hull.h
 )
 
+target_compile_options(cs564project PRIVATE -frounding-math -ffast-math)
 # Link CGAL and SFML libraries
 target_link_libraries(cs564project CGAL::CGAL sfml-graphics sfml-window sfml-system)

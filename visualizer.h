@@ -22,14 +22,11 @@ class Renderer {
     const sf::Color point_color = sf::Color::Red;
     const sf::Color line_color = sf::Color::Blue;
 
-    Delaunay* dt_test;
 
     delaunay_triangulation* dt;
     std::vector<sf::Vector2f>* points;
 
 public:
-    Renderer(int width, int height, const std::string& title, Delaunay* dt);
-
     Renderer(int width, int height, const std::string& title, delaunay_triangulation* dt, std::vector<sf::Vector2f>* points);
 
     void generate_delaunay();

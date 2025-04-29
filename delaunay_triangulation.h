@@ -5,202 +5,327 @@
 #ifndef CS564PROJECT_DELAUNAY_TRIANGULATION_H
 #define CS564PROJECT_DELAUNAY_TRIANGULATION_H
 #include "typedef.h"
+#include "quick_hull.h"
+
+#define HANDLE_OVERLAPPING_BOTTOM \
+case OVERLAPPING_BOTTOM: \
+lower_chain.erase(lower_chain.begin(), overlapping_it); \
+lower_ref_it = std::prev(mid_it);
+
+#define HANDLE_OVERLAPPING_TOP \
+case OVERLAPPING_TOP: \
+upper_chain.erase(upper_chain.begin(), overlapping_it); \
+upper_ref_it = std::prev(mid_it);
 
 class delaunay_triangulation {
 public:
     delaunay_triangulation(const std::vector<sf::Vector2f>& points) : points(points) {
     }
+    const std::vector<sf::Vector2f>& points;
     std::vector<float> medians_y;
-    std::vector<std::vector<sf::Vector3f>> chains;
+    std::vector<std::vector<my::Point>> chains;
     std::vector<sf::Vector2f> solve() {
         int random_index = rand() % points.size();
         float med_y = points[random_index].y;
-        sf::Vector3f* points_3d = new sf::Vector3f[points.size()];
+        my::Point* points_3d = new my::Point[points.size()];
         for (int i = 0; i < points.size(); i++) {
             points_3d[i].x = points[i].x;
             points_3d[i].y = points[i].y;
-            points_3d[i].z = points[i].y; // trick to calculate real hull
+            points_3d[i].z = points[i].y;
+            points_3d[i].onEdge = false;
         }
-        int ext_size = 0;
-        sf::Vector3f* extreme_points = quick_hull(points_3d, points.size(), true, ext_size);
-        std::vector<sf::Vector3f> triangulation = get_triangulation(points_3d, points.size(), extreme_points, ext_size);
+        auto [lower_chain, upper_chain] = quick_hull(points_3d, points.size());
+        chains.push_back(std::vector<my::Point>(upper_chain.begin(), upper_chain.end())); // delete later
+        chains.push_back(std::vector<my::Point>(lower_chain.begin(), lower_chain.end())); // delete later
+        // update onEdge
+        auto upper_it = upper_chain.begin();
+        auto lower_it = lower_chain.begin();
+        for (int i = 0; i < points.size(); i++) {
+            my::Point& p = points_3d[i];
+            if (*upper_it == p) {
+                p.onEdge = true;
+                ++upper_it;
+            }
+            if (*lower_it == p) {
+                p.onEdge = true;
+                ++lower_it;
+            }
+        }
+
+        get_triangulation(points_3d, points.size(), upper_chain, lower_chain);
         return std::vector<sf::Vector2f>();
     }
 
-    float find_real_median(sf::Vector3f* local_set, size_t size) {
+    static float find_real_median(my::Point* local_set, size_t size) {
         // Create a vector from the raw pointer
-        std::vector<sf::Vector3f> local_set_copy(local_set, local_set + size);
-        size_t n = local_set_copy.size();
-        auto mid_it = local_set_copy.begin() + n / 2;
-        std::nth_element(local_set_copy.begin(), mid_it, local_set_copy.end(), [](const sf::Vector3f& a, const sf::Vector3f& b) {
+        const auto mid_it = local_set + size / 2;
+        std::nth_element(local_set, mid_it, local_set + size, [](const my::Point& a, const my::Point& b) {
             return a.y < b.y;
         });
         return mid_it->y;
     }
 
-    std::vector<sf::Vector3f> get_triangulation(sf::Vector3f* local_set, int local_set_size, sf::Vector3f* extreme_points, int extreme_size) {
-        if (local_set_size <= 3) {
-            std::vector<sf::Vector3f> result;
+    enum MiddleChainState
+    {
+        OVERLAPPING_NEITHER = 0,
+        OVERLAPPING_TOP = 1,
+        OVERLAPPING_BOTTOM = 2,
+    };
+
+    std::vector<my::Point> get_triangulation(my::Point* local_set, const int local_set_size, std::list<my::Point>& upper_chain,
+        std::list<my::Point>& lower_chain) {
+        if (local_set_size - upper_chain.size() - lower_chain.size() == -2) {
+            std::vector<my::Point> result;
             for (int i = 0; i < local_set_size; i++) {
                 result.push_back(local_set[i]);
             }
-            chains.push_back(result); // delete later
-            medians_y.push_back(INFINITY); // delete later
+            //            chains.push_back(result); // delete later
+            //            medians_y.push_back(INFINITY); // delete later
             return result;
         }
-        float med_y = find_real_median(local_set, local_set_size);
-        medians_y.push_back(med_y); // delete later
+        sf::Vector2f median;
+        auto upper_it = upper_chain.begin();
+        auto lower_it = lower_chain.begin();
+
+        const int free_points = local_set_size - upper_chain.size() - lower_chain.size() + 2;
+        int median_idx = free_points / 2;
+        for (int i = 0; i < local_set_size; i++)
+        {
+            my::Point& p = local_set[i];
+            if (median_idx >= 0 && !p.onEdge) {
+                median_idx--;
+                if (median_idx <= 0) {
+                    median = sf::Vector2f(p.x, p.y);
+                    break;
+                }
+            }
+        }
+        medians_y.push_back(median.y); // delete later
         // recalculate z
         for (int i = 0; i < local_set_size; i++) {
-            local_set[i].z = local_set[i].x * local_set[i].x + (local_set[i].y - med_y) * (local_set[i].y - med_y);
+            local_set[i].z = (local_set[i].x -  median.x) * (local_set[i].x -  median.x) + (local_set[i].y - median.y) * (local_set[i].y - median.y);
         }
-        int hull3f_size = 0;
-        sf::Vector3f* hull3f = quick_hull(local_set, local_set_size, true, hull3f_size);
-        chains.push_back(std::vector<sf::Vector3f>(hull3f, hull3f + hull3f_size)); // delete later
+        std::list<my::Point> middle_chain = lifted_quick_hull(local_set, local_set_size);
+        assert(std::is_sorted(middle_chain.begin(), middle_chain.end()));
+        assert(std::is_sorted(upper_chain.begin(), upper_chain.end()));
+        assert(std::is_sorted(lower_chain.begin(), lower_chain.end()));
+        assert(std::is_sorted(local_set, local_set + local_set_size));
+        assert(*middle_chain.begin() == *upper_chain.begin());
+        assert(*std::prev(middle_chain.end()) == *std::prev(lower_chain.end()));
+
         // divide the points into two sets
-        int left_size = 0;
-        std::vector<sf::Vector3f> temp_set;
-        int hull_idx = hull3f_size - 1;
+        std::vector<my::Point> top_set, bottom_set;
+        auto chain_point_it = middle_chain.begin();
         for (int i = 0; i < local_set_size; i++) {
-            sf::Vector3f p = local_set[i];
-            if (hull_idx >= 0 && p == hull3f[hull_idx]) {
-                hull_idx--;
-                continue;
+            my::Point& p = local_set[i];
+            if (chain_point_it != middle_chain.end() && *chain_point_it == p) {
+                p.onEdge = true;
+                chain_point_it = std::next(chain_point_it);
             }
-            if (p.y < med_y) {
-                local_set[left_size++] = p;
-            } else {
-                temp_set.push_back(p);
-            }
-        }
-        assert(hull_idx == -1);
-        std::copy(temp_set.begin(), temp_set.end(), local_set + left_size);
-        int right_size = temp_set.size();
-        temp_set.clear(); // save memory
-        // divide the extreme points into two sets
-        int first_ext_left_size = 0, ext_right_size = 0;
-        while(first_ext_left_size < extreme_size && extreme_points[first_ext_left_size].y <= med_y) {
-            first_ext_left_size++;
-        }
-        while(first_ext_left_size + ext_right_size < extreme_size && extreme_points[first_ext_left_size + ext_right_size].y > med_y) {
-            ext_right_size++;
-        }
-        int last_ext_left_size = extreme_size - first_ext_left_size - ext_right_size;
-        int ext_left_size = first_ext_left_size + ext_right_size;
-        sf::Vector3f* last_left_extreme = new sf::Vector3f[last_ext_left_size];
-        std::copy(extreme_points + first_ext_left_size + ext_right_size, extreme_points + extreme_size, last_left_extreme);
-        std::move(extreme_points + first_ext_left_size, extreme_points + first_ext_left_size + ext_right_size, extreme_points + ext_left_size);
-        std::copy(last_left_extreme, last_left_extreme + last_ext_left_size, extreme_points + first_ext_left_size);
-
-        // find the triangulation of the left and right sets
-        std::vector<sf::Vector3f> left_del_chain = get_triangulation(local_set, left_size, extreme_points, ext_left_size);
-        std::vector<sf::Vector3f> right_del_chain = get_triangulation(local_set + left_size, right_size, extreme_points + ext_left_size, ext_right_size);
-
-        // todo
-        return std::vector<sf::Vector3f>();
-    }
-
-    sf::Vector3f* quick_hull(sf::Vector3f* lpoints, int size, bool l2_triangulation, int& hull_size) {
-        if (size <= 3) {
-            hull_size = size;
-            return lpoints;
-        }
-        // assuming points are sorted
-        sf::Vector3f left = lpoints[0];
-        sf::Vector3f right = lpoints[size - 1];
-
-        std::vector<sf::Vector3f> left_set, right_set;
-        for (int i = 1; i < size - 1; i++) {
-            sf::Vector3f p = lpoints[i];
-            if (p != left && p != right) {
-                float side = (right.x - left.x) * (p.z - left.z) - (right.z - left.z) * (p.x - left.x);
-                if (side > 0) {
-                    left_set.push_back(p);
+            if (!p.onEdge)
+            {
+                if (p.y < median.y) {
+                    bottom_set.push_back(p);
                 } else {
-                    right_set.push_back(p);
+                    top_set.push_back(p);
                 }
             }
         }
-        std::list<sf::Vector3f> hullL, hullR;
-        hullL.push_back(left);
-        hullL.push_back(right);
-        hullR.push_back(right);
-        hullR.push_back(left);
-        std::list<sf::Vector3f>::const_iterator leftStartPtr = hullL.begin();
-        std::list<sf::Vector3f>::const_iterator rightStartPtr = hullR.begin();
+        // END DIVIDE POINTS
 
-        sf::Vector3f* hull;
-        if (l2_triangulation) {
-            find_hull(rightStartPtr, right_set, hullR); // the right set is empty if it's lifted
-            hull = new sf::Vector3f[hullR.size()];
-            hull_size = hullR.size();
-            std::copy(hullR.begin(), hullR.end(), hull);
-        } else {
-            find_hull(leftStartPtr, left_set, hullL);
-            find_hull(rightStartPtr, right_set, hullR);
-            hull = new sf::Vector3f[hullL.size() + hullR.size() - 2];
-            hull_size = hullL.size() + hullR.size() - 2;
-
-            hullL.pop_back();
-            hullR.pop_back();
-
-            std::copy(hullL.begin(), hullL.end(), hull);
-            std::copy(hullR.begin(), hullR.end(), hull + hullL.size() - 1);
+        auto mid_it = std::next(middle_chain.begin());
+        upper_it = std::next(upper_chain.begin());
+        lower_it = std::next(lower_chain.begin());
+        auto upper_ref_it = middle_chain.begin();
+        auto lower_ref_it = middle_chain.begin();
+        chains.push_back(std::vector<my::Point>(middle_chain.begin(), middle_chain.end())); // delete later
+        MiddleChainState state = OVERLAPPING_NEITHER;
+        std::list<my::Point>::const_iterator overlapping_it; // used by both chains
+        if (*mid_it == *upper_it) {
+            state = OVERLAPPING_TOP;
+            overlapping_it = upper_it;
+        } else if (*mid_it == *lower_it) {
+            state = OVERLAPPING_BOTTOM;
+            overlapping_it = lower_it;
         }
-        return hull;
+        std::vector<std::array<std::list<my::Point>, 2>> upper_chain_pairs;
+        std::vector<std::array<std::list<my::Point>, 2>> lower_chain_pairs;
+        const auto last_it = std::prev(middle_chain.end());
+
+        while (*mid_it != *last_it)
+        {
+            while (*upper_it < *mid_it) {
+                upper_it = std::next(upper_it);
+            }
+            if (*mid_it == *upper_it) {
+                switch (state) {
+                    HANDLE_OVERLAPPING_BOTTOM
+                    case OVERLAPPING_NEITHER:
+                    upper_chain_pairs.emplace_back(std::array<std::list<my::Point>, 2>());
+                    upper_chain_pairs.back()[0].splice(upper_chain_pairs.back()[0].begin(), upper_chain, upper_chain.begin(), upper_it); // move upper head
+                    upper_chain_pairs.back()[0].push_back(*upper_it); // must include end as well
+                    std::copy(upper_ref_it, std::next(mid_it), std::back_inserter(upper_chain_pairs.back()[1])); // copy middle subchain
+                    upper_ref_it = mid_it;
+                    state = OVERLAPPING_TOP;
+                    break;
+                case OVERLAPPING_TOP:
+                    break; // do nothing
+                }
+                overlapping_it = upper_it;
+                upper_it = std::next(upper_it);
+            } else {
+                while (*lower_it < *mid_it) {
+                    lower_it = std::next(lower_it);
+                }
+                if (*mid_it == *lower_it) {
+                    switch (state) {
+                        HANDLE_OVERLAPPING_TOP
+                        case OVERLAPPING_NEITHER:
+                        // std::copy(lower_ref_it, mid_it, std::back_inserter(pairs[0])); // copy middle subchain
+                        // pairs[1].splice(pairs[1].begin(), lower_chain, lower_chain.begin(), lower_it); // move lower head
+                        lower_chain_pairs.emplace_back(std::array<std::list<my::Point>, 2>());
+                        std::copy(lower_ref_it, std::next(mid_it), std::back_inserter(lower_chain_pairs.back()[0])); // copy middle subchain
+                        lower_chain_pairs.back()[1].splice(lower_chain_pairs.back()[1].begin(), lower_chain, lower_chain.begin(), lower_it); // move lower head
+                        lower_chain_pairs.back()[1].push_back(*lower_it); // must include end as well
+                        lower_ref_it = mid_it;
+                        state = OVERLAPPING_BOTTOM;
+                        break;
+                    case OVERLAPPING_BOTTOM:
+                        break; // do nothing
+                    }
+                    overlapping_it = lower_it;
+                    lower_it = std::next(lower_it);
+                } else {
+                    switch (state) {
+                    HANDLE_OVERLAPPING_BOTTOM
+                        break;
+                    HANDLE_OVERLAPPING_TOP
+                        break;
+                    case OVERLAPPING_NEITHER:
+                        break;
+                    }
+                    state = OVERLAPPING_NEITHER;
+                }
+            }
+            mid_it = std::next(mid_it);
+        }
+        // end case:
+        switch (state) {
+        case OVERLAPPING_BOTTOM:
+            middle_chain.erase(middle_chain.begin(), upper_ref_it);
+            upper_chain_pairs.emplace_back(std::array{std::move(upper_chain), std::move(middle_chain)});
+            break;
+        case OVERLAPPING_TOP:
+            middle_chain.erase(middle_chain.begin(), lower_ref_it);
+            lower_chain_pairs.emplace_back(std::array{std::move(middle_chain), std::move(lower_chain)});
+            break;
+        case OVERLAPPING_NEITHER: // whichever one is smaller will get std::move the other one will get a copy
+            if (*upper_ref_it > *lower_ref_it) {
+                upper_chain_pairs.emplace_back(std::array{std::move(upper_chain), std::list<my::Point>()});
+                std::copy(upper_ref_it, middle_chain.end(), std::back_inserter(upper_chain_pairs.back()[1]));
+                middle_chain.erase(middle_chain.begin(), lower_ref_it);
+                lower_chain_pairs.emplace_back(std::array{std::move(middle_chain), std::move(lower_chain)});
+            } else {
+                lower_chain_pairs.emplace_back(std::array{std::list<my::Point>(), std::move(lower_chain)});
+                std::copy(lower_ref_it, middle_chain.end(), std::back_inserter(lower_chain_pairs.back()[0]));
+                middle_chain.erase(middle_chain.begin(), upper_ref_it);
+                upper_chain_pairs.emplace_back(std::array{std::move(upper_chain), std::move(middle_chain)});
+            }
+            break;
+        }
+        for (auto& pair : upper_chain_pairs) {
+            assert(pair[0].size() > 1);
+            assert(pair[1].size() > 1);
+            assert(*pair[0].begin() == *pair[1].begin());
+            assert(*std::prev(pair[0].end()) == *std::prev(pair[1].end()));
+        }
+        for (auto& pair : lower_chain_pairs) {
+            assert(pair[0].size() > 1);
+            assert(pair[1].size() > 1);
+            assert(*pair[0].begin() == *pair[1].begin());
+            assert(*std::prev(pair[0].end()) == *std::prev(pair[1].end()));
+        }
+
+        // END TRIM CHAINS
+        //float med_left_y = left_set.size() != 0 ? find_real_median(left_set.data(), left_set.size()): INFINITY;
+        //float med_right_y = right_set.size() != 0 ? find_real_median(right_set.data(), right_set.size()): INFINITY;
+
+        delete[] local_set;
+        process_chain_pairs(upper_chain_pairs, top_set);
+        process_chain_pairs(lower_chain_pairs, bottom_set);
+        return std::vector<my::Point>();
     }
-    const std::vector<sf::Vector2f>& points;
+
 private:
-
-    void find_hull(std::list<sf::Vector3f>::const_iterator leftIt, const std::vector<sf::Vector3f>& local_points, std::list<sf::Vector3f>& hull) {
-        if (local_points.empty()) {
-            return;
-        }
-        std::list<sf::Vector3f>::const_iterator rightIt = std::next(leftIt);
-        sf::Vector3f left = *leftIt;
-        sf::Vector3f right = *rightIt;
-
-        float max_dist = 0;
-        sf::Vector3f farthest_point;
-        for (const auto& p : local_points) {
-            float dist = line_distance(left, right, p);
-            if (dist > max_dist) {
-                max_dist = dist;
-                farthest_point = p;
-            }
-        }
-        hull.insert(rightIt, farthest_point);
-
-        std::vector<sf::Vector3f> left_set, right_set;
-
-        for (const auto& p : local_points) {
-            if (p != left && p != right && p != farthest_point) {
-                float sideLeft = (farthest_point.x - left.x) * (p.z - left.z) - (farthest_point.z - left.z) * (p.x - left.x);
-                float sideRight = (right.x - farthest_point.x) * (p.z - farthest_point.z) - (right.z - farthest_point.z) * (p.x - farthest_point.x);
-                if (sideLeft > 0) {
-                    left_set.push_back(p);
-                } else if (sideRight > 0) {
-                    right_set.push_back(p);
-                }
-            }
-        }
-
-        std::list<sf::Vector3f>::const_iterator farthestIt = std::next(leftIt);
-        find_hull(leftIt, left_set, hull);
-        find_hull(farthestIt, right_set, hull);
-    }
-
-    inline float line_distance(const sf::Vector3f& a, const sf::Vector3f& b, const sf::Vector3f& p) {
-        float num = std::abs((b.z - a.z) * p.x - (b.x - a.x) * p.z + b.x * a.z - b.z * a.x);
-        float den = std::sqrt((b.z - a.z) * (b.z - a.z) + (b.x - a.x) * (b.x - a.x));
-        return num / den;
-    }
-
-
-
     std::vector<sf::Vector2f> merge(const std::vector<sf::Vector2f>& left, const std::vector<sf::Vector2f>& right) {
         //todo
         return std::vector<sf::Vector2f>();
+    }
+
+    template <typename Iterator>
+    bool trim_monotone_chains(Iterator& other_it, Iterator& mid_it) {
+        bool run_once = false;
+        while (*std::next(other_it) == *std::next(mid_it)) {
+            other_it = std::next(other_it);
+            mid_it = std::next(mid_it);
+            run_once = true;
+        }
+        return run_once;
+    }
+    void process_chain_pairs(std::vector<std::array<std::list<my::Point>, 2>>& chain_pairs,
+    const std::vector<my::Point>& base_set) {
+        int idx = 0;
+        const my::Point *base_ptr = base_set.data();
+        const my::Point * const base_end = base_ptr + base_set.size();
+        for (int i = 0; i < chain_pairs.size(); i++) {
+
+            if (i == chain_pairs.size() - 1) {
+                idx = base_set.size() - (base_ptr - base_set.data());
+            } else {
+                while (base_ptr + idx < base_end && *(base_ptr + idx) < chain_pairs[i][0].back()) {
+                    idx++;
+                }
+            }
+
+            const my::Point* const lcl_base_end = base_ptr + idx;
+            #pragma omp task firstprivate(lcl_base_end, base_ptr, i)
+            {
+                auto& pair = chain_pairs[i];
+                auto& sub_upper_chain = pair[0];
+                auto& sub_lower_chain = pair[1];
+                auto& end_point = sub_upper_chain.back();
+                int size = (lcl_base_end - base_ptr) + sub_upper_chain.size() + sub_lower_chain.size() - 2;
+                const auto sub_local_set = new my::Point[(lcl_base_end - base_ptr) + sub_upper_chain.size() + sub_lower_chain.size() - 2];
+                auto sub_upper_it = std::next(sub_upper_chain.begin());
+                auto sub_lower_it = sub_lower_chain.begin();
+                int point_idx = 0;
+                const auto sub_upper_end = std::prev(sub_upper_chain.end());
+                if (base_ptr < lcl_base_end) {
+                    assert(*base_ptr > *sub_upper_chain.begin());
+                    assert(*base_ptr > *sub_lower_chain.begin());
+                }
+                // Merge all three
+                while (base_ptr < lcl_base_end || sub_upper_it != sub_upper_end || sub_lower_it != sub_lower_chain.end()) {
+                    if (base_ptr < lcl_base_end &&
+                        (sub_upper_it == sub_upper_end || *base_ptr < *sub_upper_it) &&
+                        (sub_lower_it == sub_lower_chain.end() || *base_ptr < *sub_lower_it)) {
+                        sub_local_set[point_idx++] = *base_ptr;
+                        base_ptr++;
+                        }
+                    else if (sub_upper_it != sub_upper_end &&
+                        (sub_lower_it == sub_lower_chain.end() || *sub_upper_it < *sub_lower_it)) {
+                            sub_local_set[point_idx++] = *sub_upper_it++;
+                        }
+                    else if (sub_lower_it != sub_lower_chain.end()) {
+                        sub_local_set[point_idx++] = *sub_lower_it++;
+                    }
+                }
+                assert(point_idx == size);
+                get_triangulation(sub_local_set, point_idx, sub_upper_chain, sub_lower_chain);
+            }
+            base_ptr = lcl_base_end;
+            idx = 0;
+        }
     }
 };
 

@@ -3,13 +3,6 @@
 //
 #include "typedef.h"
 
-sf::Vector2f CGALtoSF(const Point_2 p) {
-    return sf::Vector2f(p.x(), p.y());
-}
-
-Point_2 SFtoCGAL(const sf::Vector2f p) {
-    return Point_2(p.x, p.y);
-}
 sf::Color get_random_color(unsigned int seed) {
     if (seed != UINT32_MAX) {
         srand(seed);
@@ -22,3 +15,5 @@ sf::Color get_random_color(unsigned int seed) {
     } while (r + g + b > 600);
     return sf::Color(r, g, b);
 }
+
+constexpr unsigned int last_bit = 1 << 31;

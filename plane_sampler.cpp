@@ -18,7 +18,7 @@ plane_t gaussian_plane(int n, double sigma, double mu) {
     for (int i = 0; i < n; i++) {
         double x = x_distribution(generator);
         double y = y_distribution(generator);
-        points.push_back(Point_2(x, y));
+        points.push_back(my::Point(x, y));
     }
     return points;
 }
@@ -31,7 +31,7 @@ plane_t uniform_plane(int n, double x_min, double x_max, double y_min, double y_
     for (int i = 0; i < n; i++) {
         double x = x_distribution(generator);
         double y = y_distribution(generator);
-        points.push_back(Point_2(x, y));
+        points.push_back(my::Point(x, y));
     }
     return points;
 }
@@ -44,7 +44,7 @@ plane_t circle_plane(int n, double r) {
         double angle = angle_distribution(generator);
         double x = r * cos(angle);
         double y = r * sin(angle);
-        points.push_back(Point_2(x, y));
+        points.push_back(my::Point(x, y));
     }
     return points;
 }

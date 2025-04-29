@@ -6,7 +6,7 @@
 #define CS564PROJECT_PLANE_SAMPLER_H
 #include "typedef.h"
 
-typedef std::vector<Point_2> plane_t;
+typedef std::vector<my::Point> plane_t;
 
 
 plane_t uniform_plane(int n, double x_min, double x_max, double y_min, double y_max);
