@@ -6,6 +6,13 @@
 #define CS564PROJECT_DELAUNAY_TRIANGULATION_H
 #include "typedef.h"
 #include "quick_hull.h"
+#include <math.h>
+#include <stack>
+#define REAL float
+extern "C" {
+#include "triangle/triangle.h"
+}
+
 
 #define HANDLE_OVERLAPPING_BOTTOM \
 case OVERLAPPING_BOTTOM: \
@@ -24,6 +31,7 @@ public:
     const std::vector<sf::Vector2f>& points;
     std::vector<float> medians_y;
     std::vector<std::vector<my::Point>> chains;
+    std::vector<std::pair<std::list<my::Point>, std::list<my::Point>>> chain_pairs;
     std::vector<sf::Vector2f> solve() {
         int random_index = rand() % points.size();
         float med_y = points[random_index].y;
@@ -72,16 +80,102 @@ public:
         OVERLAPPING_BOTTOM = 2,
     };
 
-    std::vector<my::Point> get_triangulation(my::Point* local_set, const int local_set_size, std::list<my::Point>& upper_chain,
-        std::list<my::Point>& lower_chain) {
-        if (local_set_size - upper_chain.size() - lower_chain.size() == -2) {
-            std::vector<my::Point> result;
-            for (int i = 0; i < local_set_size; i++) {
-                result.push_back(local_set[i]);
+    void triangulate_polygon(const std::list<my::Point>& upper_chain, const std::list<my::Point>& lower_chain) {
+        const int size = upper_chain.size() + lower_chain.size() - 2;
+        if (size == 4) {
+            if (upper_chain.size() == 3) {
+                const my::Point& p1 = upper_chain.front();
+                const my::Point& p2 = *std::next(lower_chain.begin());
+                const my::Point& p3 = upper_chain.back();
+                const my::Point& p4 = *std::next(upper_chain.begin());
+                const Circle c = circumcircle(p1, p4, p2);
+                if (isInside(c, p3)) {
+                    chains.push_back(std::vector{p1, p3});
+                } else {
+                    chains.push_back(std::vector{p2, p4});
+                }
+            } else {
+                const std::list<my::Point>& long_chain = upper_chain.size() > lower_chain.size() ? upper_chain : lower_chain;
+                const std::list<my::Point>& short_chain = upper_chain.size() > lower_chain.size() ? lower_chain : upper_chain;
+                const my::Point& p1 = short_chain.front();
+                const my::Point& p2 = *std::next(long_chain.rbegin());
+                const my::Point& p3 = short_chain.back();
+                const Circle c = circumcircle(p1, p2, p3);
+                const my::Point& p4 = *std::next(long_chain.begin());
+                if (isInside(c, p4)) {
+                    chains.push_back(std::vector{p3, p4});
+                } else {
+                    chains.push_back(std::vector{p1, p2});
+                }
             }
-            //            chains.push_back(result); // delete later
-            //            medians_y.push_back(INFINITY); // delete later
-            return result;
+        } else if (size > 4) {
+            // const std::list<my::Point>& long_chain = upper_chain.size() > lower_chain.size() ? upper_chain : lower_chain;
+            // const std::list<my::Point>& short_chain = upper_chain.size() > lower_chain.size() ? lower_chain : upper_chain;
+            // const std::list<my::Point>& selected_chain = short_chain.size() > 2 ? short_chain : long_chain;
+            // auto it = selected_chain.begin();
+            // for (int i = 0; i < selected_chain.size() / 2; i++) {
+            //     ++it;
+            // }
+            // const my::Point& p1 = *it;
+            // const my::Point& prev = *std::prev(it);
+            // const my::Point& next = *std::next(it);
+            chain_pairs.emplace_back(std::pair(upper_chain, lower_chain));
+            triangulateio in, out;
+            in.numberofpoints = size;
+            in.numberofpointattributes = 0;
+            in.pointmarkerlist = nullptr;
+            in.numberofholes = 0;
+            in.numberofregions = 0;
+            in.regionlist = nullptr;
+            in.pointlist = new float[size * 2];
+            int idx = 0;
+            for (const auto& p : upper_chain) {
+                in.pointlist[idx++] = p.x;
+                in.pointlist[idx++] = p.y;
+            }
+            for (auto it = std::next(lower_chain.rbegin()); it != std::prev(lower_chain.rend()); ++it) {
+                in.pointlist[idx++] = it->x;
+                in.pointlist[idx++] = it->y;
+            }
+            in.numberofsegments = size;
+            in.segmentlist = new int[size * 2];
+            in.segmentmarkerlist = nullptr;
+            for (int i = 0; i < size; i++) {
+                in.segmentlist[i * 2] = i;
+                in.segmentlist[i * 2 + 1] = (i + 1) % size;
+            }
+            out.pointlist = nullptr;
+            out.pointattributelist = nullptr;
+            out.pointmarkerlist = nullptr;
+            out.trianglelist = nullptr;
+            out.triangleattributelist = nullptr;
+            out.trianglearealist = nullptr;
+            out.neighborlist = nullptr;
+            out.numberoftriangles = 0;
+            out.numberofcorners = 0;
+            out.numberoftriangleattributes = 0;
+            out.segmentlist = nullptr;
+            out.segmentmarkerlist = nullptr;
+            out.numberofsegments = 0;
+            out.edgelist = nullptr;
+            out.normlist = nullptr;
+            out.edgemarkerlist = nullptr;
+            out.numberofedges = 0;
+
+            triangulate("pNzqeEQ", &in, &out, nullptr);
+            for (int i = 0; i < out.numberofedges; i++) {
+                const int first_idx = out.edgelist[i * 2];
+                const int second_idx = out.edgelist[i * 2 + 1];
+                chains.push_back(std::vector{my::Point(in.pointlist[first_idx * 2], in.pointlist[first_idx * 2 + 1]),
+                                  my::Point(in.pointlist[second_idx * 2], in.pointlist[second_idx * 2 + 1])});
+            }
+        }
+    }
+
+    void get_triangulation(my::Point* local_set, const int local_set_size, std::list<my::Point>& upper_chain,
+                           std::list<my::Point>& lower_chain) {
+        if (local_set_size - upper_chain.size() - lower_chain.size() == -2) {
+            return triangulate_polygon(upper_chain, lower_chain);
         }
         sf::Vector2f median;
         auto upper_it = upper_chain.begin();
@@ -100,7 +194,7 @@ public:
                 }
             }
         }
-        medians_y.push_back(median.y); // delete later
+        //medians_y.push_back(median.y); // delete later
         // recalculate z
         for (int i = 0; i < local_set_size; i++) {
             local_set[i].z = (local_set[i].x -  median.x) * (local_set[i].x -  median.x) + (local_set[i].y - median.y) * (local_set[i].y - median.y);
@@ -253,7 +347,6 @@ public:
         delete[] local_set;
         process_chain_pairs(upper_chain_pairs, top_set);
         process_chain_pairs(lower_chain_pairs, bottom_set);
-        return std::vector<my::Point>();
     }
 
 private:
@@ -326,6 +419,35 @@ private:
             base_ptr = lcl_base_end;
             idx = 0;
         }
+    }
+
+    struct Circle {
+        float x,y,r;
+    };
+
+    static Circle circumcircle(const my::Point& a, const my::Point& b, const my::Point& c) {
+        float A = b.x - a.x;
+        float B = b.y - a.y;
+        float C = c.x - a.x;
+        float D = c.y - a.y;
+
+        float E = A * (a.x + b.x) + B * (a.y + b.y);
+        float F = C * (a.x + c.x) + D * (a.y + c.y);
+        float G = 2.0 * (A * (c.y - b.y) - B * (c.x - b.x));
+
+
+        float cx = (D * E - B * F) / G;
+        float cy = (A * F - C * E) / G;
+
+        float dx = cx - a.x;
+        float dy = cy - a.y;
+        float radius = std::sqrt(dx * dx + dy * dy);
+
+        return Circle{cx, cy, radius};
+    }
+
+    static bool isInside(const Circle& circle, const my::Point& p) {
+        return (p.x - circle.x) * (p.x - circle.x) + (p.y - circle.y) * (p.y - circle.y) < circle.r * circle.r;
     }
 };
 

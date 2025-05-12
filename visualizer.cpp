@@ -33,9 +33,134 @@ Renderer::Renderer(int width, int height, const std::string& title, delaunay_tri
 
 void Renderer::generate_delaunay() {
     window.clear(sf::Color::White);
-    generate_impl_delaunay();
+    if (polygon_idx == -1) {
+        generate_impl_delaunay();
+    } else {
+        render_polygon();
+    }
     window.display();
 }
+
+inline sf::Vector2f get_inverted(const my::Point& vec, const my::Point& p1) {
+    const float l2n = std::sqrt((vec.x - p1.x) * (vec.x - p1.x) + (vec.y - p1.y) * (vec.y - p1.y));
+    return sf::Vector2f((vec.x - p1.x) / l2n, (vec.y - p1.y) / l2n);
+}
+
+void Renderer::render_polygon() {
+    const std::list<my::Point>& upper_chain = dt->chain_pairs[polygon_idx].first;
+    const std::list<my::Point>& lower_chain = dt->chain_pairs[polygon_idx].second;
+
+    int color_idx = 0;
+    for (int k = 0; k < 2; k++) {
+        const std::list<my::Point>& chain = k == 0 ? upper_chain : lower_chain;
+        sf::VertexArray chain_line(sf::PrimitiveType::LineStrip, chain.size());
+        auto p = chain.begin();
+        for (int i = 0; i < chain.size(); i++) {
+            sf::CircleShape point(point_radius);
+            point.setFillColor(get_random_color(color_idx++));
+            sf::Vector2f rad_offset(-point_radius, -point_radius);
+            sf::Vector2f vec2(p->x, p->y);
+            point.setPosition((vec2 * scale) + offset + rad_offset);
+            window.draw(point);
+            chain_line[i].position = (vec2 * scale) + offset;
+            chain_line[i].color = k == 0 ? sf::Color::Red : sf::Color::Blue;
+            ++p;
+        }
+        window.draw(chain_line);
+    }
+
+    const std::list<my::Point>& long_chain = upper_chain.size() > lower_chain.size() ? upper_chain : lower_chain;
+    const std::list<my::Point>& short_chain = upper_chain.size() > lower_chain.size() ? lower_chain : upper_chain;
+    const std::list<my::Point>& selected_chain = short_chain.size() > 2 ? short_chain : long_chain;
+    auto it = selected_chain.begin();
+    for (int i = 0; i < selected_chain.size() / 2; i++) {
+        ++it;
+    }
+    const my::Point& p1 = *it;
+    const my::Point& prev = *std::prev(it);
+    const my::Point& next = *std::next(it);
+    sf::Vector2f* inverted_points[2];
+    inverted_points[0] = new sf::Vector2f[upper_chain.size()];
+    inverted_points[1] = new sf::Vector2f[lower_chain.size()];
+
+    float inv_min_y = std::numeric_limits<float>::max(),
+            inv_max_y = std::numeric_limits<float>::lowest(),
+    inv_max_x = std::numeric_limits<float>::lowest(),
+            inv_min_x = std::numeric_limits<float>::max();
+    for (int k = 0; k < 2; k++) {
+        const std::list<my::Point>& chain = k == 0 ? upper_chain : lower_chain;
+        auto it = chain.begin();
+        for (int i = 0; i < chain.size(); i++) {
+            if (*it != p1)
+                inverted_points[k][i] = get_inverted(*it, p1);
+            else {
+                inverted_points[k][i] = sf::Vector2f(0, 0);
+            }
+            if (inverted_points[k][i].x < inv_min_x) {
+                inv_min_x = inverted_points[k][i].x;
+            }
+            if (inverted_points[k][i].x > inv_max_x) {
+                inv_max_x = inverted_points[k][i].x;
+            }
+            if (inverted_points[k][i].y < inv_min_y) {
+                inv_min_y = inverted_points[k][i].y;
+            }
+            if (inverted_points[k][i].y > inv_max_y) {
+                inv_max_y = inverted_points[k][i].y;
+            }
+            ++it;
+        }
+    }
+    float min_x = upper_chain.front().x, max_x = upper_chain.back().x,
+        min_y = std::numeric_limits<float>::max(),
+        max_y = std::numeric_limits<float>::lowest();
+
+    for (int k = 0; k < 2; k++) {
+        const std::list<my::Point>& chain = k == 0 ? upper_chain : lower_chain;
+        for (int i = 0; i < chain.size(); i++) {
+            if (chain.front().y < min_y) {
+                min_y = chain.front().y;
+            }
+            if (chain.back().y > max_y) {
+                max_y = chain.back().y;
+            }
+        }
+    }
+    const float inv_scale = std::max((max_x - min_x)/(inv_max_x - inv_min_x), (max_y - min_y)/(inv_max_y - inv_min_y));
+    const sf::Vector2f inv_offset(max_x - inv_min_x + 10, max_y - inv_max_y);
+    for (int k = 0; k < 2; k++) {
+        const std::list<my::Point>& chain = k == 0 ? upper_chain : lower_chain;
+        for (int i = 0; i < chain.size(); i++) {
+            inverted_points[k][i] = (inverted_points[k][i] * inv_scale + inv_offset) * scale + offset;
+        }
+    }
+
+    color_idx = 0;
+    for (int k = 0; k < 2; k++) {
+        const std::list<my::Point>& chain = k == 0 ? upper_chain : lower_chain;
+        sf::VertexArray chain_line(sf::PrimitiveType::LineStrip, chain.size());
+        for (int i = 0; i < chain.size(); i++) {
+            const sf::Vector2f& vec2 = inverted_points[k][i];
+            sf::CircleShape point(point_radius);
+            point.setFillColor(get_random_color(color_idx++));
+            const sf::Vector2f rad_offset(-point_radius, -point_radius);
+            point.setPosition(vec2 + rad_offset);
+            window.draw(point);
+            chain_line[i].position = vec2;
+            chain_line[i].color = k == 0 ? sf::Color::Red : sf::Color::Blue;
+        }
+        window.draw(chain_line);
+    }
+    const sf::Vector2f inv_next = (get_inverted(next, p1) * inv_scale + inv_offset) * scale + offset;
+    const sf::Vector2f inv_prev = (get_inverted(prev, p1) * inv_scale + inv_offset) * scale + offset;
+    sf::Vertex line[] = {
+            sf::Vertex(inv_next, sf::Color::Green),
+            sf::Vertex(inv_prev, sf::Color::Green),
+    };
+    window.draw(line, 2, sf::PrimitiveType::Lines);
+
+}
+
 
 void Renderer::generate_impl_delaunay() {
     for (auto& vec: dt->points){
@@ -154,6 +279,12 @@ void Renderer::game_loop() {
                 else if (keyPressed->scancode == sf::Keyboard::Scancode::Space) {
                     show_circles = !show_circles;
                     generate_delaunay();
+                } else if (keyPressed->scancode == sf::Keyboard::Scancode::R) {
+                    polygon_idx = (polygon_idx + 1) % dt->chains.size();
+                    generate_delaunay();
+                } else if (keyPressed->scancode == sf::Keyboard::Scancode::C) {
+                    polygon_idx = -1;
+                    generate_delaunay();
                 }
             }
             if (const auto* mouseWheelScrolled = event->getIf<sf::Event::MouseWheelScrolled>()) {
@@ -200,6 +331,8 @@ void Renderer::game_loop() {
             if (event->is<sf::Event::Closed>()) {
                 window.close();
             }
+        } else {
+            sleep(sf::milliseconds(10));
         }
     }
 }

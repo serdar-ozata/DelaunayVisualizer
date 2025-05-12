@@ -21,7 +21,7 @@ class Renderer {
     const int line_thickness = 2;
     const sf::Color point_color = sf::Color::Red;
     const sf::Color line_color = sf::Color::Blue;
-
+    int polygon_idx = -1;
 
     delaunay_triangulation* dt;
     std::vector<sf::Vector2f>* points;
@@ -31,9 +31,10 @@ public:
 
     void generate_delaunay();
 
+    void render_polygon();
+
     void game_loop();
 private:
-    void generate_test_delaunay();
 
     void generate_impl_delaunay();
 };

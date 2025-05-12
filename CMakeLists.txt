@@ -3,15 +3,18 @@ project(cs564project)
 
 set(CMAKE_CXX_STANDARD 20)
 
-# Find CGAL package
-find_package(CGAL REQUIRED)
-
 # Find SFML package
 find_package(SFML 3.0 COMPONENTS Graphics Window System REQUIRED)
 
+# Add triangle.o as an imported object library
+add_library(triangle OBJECT IMPORTED)
+set_target_properties(triangle PROPERTIES
+        IMPORTED_OBJECTS "${CMAKE_CURRENT_SOURCE_DIR}/triangle/triangle.o"
+)
 
 # Add executable
-add_executable(cs564project main.cpp
+add_executable(cs564project
+        main.cpp
         plane_sampler.cpp
         plane_sampler.h
         typedef.h
@@ -23,6 +26,18 @@ add_executable(cs564project main.cpp
         quick_hull.h
 )
 
+# Include triangle's header directory
+target_include_directories(cs564project PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/triangle
+)
+
+# Link triangle.o and SFML
+target_link_libraries(cs564project
+        triangle
+        sfml-graphics
+        sfml-window
+        sfml-system
+)
+
+# Optional compile flags
 target_compile_options(cs564project PRIVATE -frounding-math -ffast-math)
-# Link CGAL and SFML libraries
-target_link_libraries(cs564project CGAL::CGAL sfml-graphics sfml-window sfml-system)
