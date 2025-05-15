@@ -8,63 +8,86 @@
 #include "quick_hull.h"
 #include <math.h>
 #include <stack>
-#define REAL float
+#include <vector>
+#include <algorithm>
+#include <array>
+#include <string>
+// #include <omp.h>
+#include <iostream>
 extern "C" {
 #include "triangle/triangle.h"
 }
+#include <list>
+
 
 
 #define HANDLE_OVERLAPPING_BOTTOM \
-case OVERLAPPING_BOTTOM: \
 lower_chain.erase(lower_chain.begin(), overlapping_it); \
 lower_ref_it = std::prev(mid_it);
 
 #define HANDLE_OVERLAPPING_TOP \
-case OVERLAPPING_TOP: \
 upper_chain.erase(upper_chain.begin(), overlapping_it); \
 upper_ref_it = std::prev(mid_it);
 
 class delaunay_triangulation {
 public:
-    delaunay_triangulation(const std::vector<sf::Vector2f>& points) : points(points) {
+    delaunay_triangulation(const std::vector<Vector2>& points) : points(points) {
     }
-    const std::vector<sf::Vector2f>& points;
-    std::vector<float> medians_y;
-    std::vector<std::vector<my::Point>> chains;
-    std::vector<std::pair<std::list<my::Point>, std::list<my::Point>>> chain_pairs;
-    std::vector<sf::Vector2f> solve() {
+    const std::vector<Vector2>& points;
+    std::vector<REAL> medians_y;
+    std::vector<std::vector<int>>* chains = new std::vector<std::vector<int>>[/*omp_get_max_threads()*/ 1];
+    void solve() {
         int random_index = rand() % points.size();
-        float med_y = points[random_index].y;
+        REAL med_y = points[random_index].y;
         my::Point* points_3d = new my::Point[points.size()];
+        if (points.size() >= 1 << 31) {
+            std::cerr << "There are too many points! Integer overflow may occur." << std::endl;
+            exit(EXIT_FAILURE);
+        }
+
         for (int i = 0; i < points.size(); i++) {
             points_3d[i].x = points[i].x;
             points_3d[i].y = points[i].y;
             points_3d[i].z = points[i].y;
-            points_3d[i].onEdge = false;
+            points_3d[i].id = i;
         }
         auto [lower_chain, upper_chain] = quick_hull(points_3d, points.size());
-        chains.push_back(std::vector<my::Point>(upper_chain.begin(), upper_chain.end())); // delete later
-        chains.push_back(std::vector<my::Point>(lower_chain.begin(), lower_chain.end())); // delete later
+        auto& current_chain = chains[0];
+        current_chain.push_back(std::vector<int>());
+        auto& added_vec = current_chain.back();
+        added_vec.reserve(upper_chain.size() + lower_chain.size());
+        // add counterclockwise
+        for (const auto& p: lower_chain) {
+            added_vec.push_back(p.getId());
+        }
+        for (auto it = std::next(upper_chain.rbegin()); it != upper_chain.rend(); ++it) {
+            added_vec.push_back(it->getId());
+        }
+
         // update onEdge
         auto upper_it = upper_chain.begin();
         auto lower_it = lower_chain.begin();
         for (int i = 0; i < points.size(); i++) {
             my::Point& p = points_3d[i];
             if (*upper_it == p) {
-                p.onEdge = true;
+                p.setOnEdge();
                 ++upper_it;
             }
             if (*lower_it == p) {
-                p.onEdge = true;
+                p.setOnEdge();
                 ++lower_it;
             }
         }
-
-        get_triangulation(points_3d, points.size(), upper_chain, lower_chain);
-        return std::vector<sf::Vector2f>();
+#pragma omp parallel
+        {
+#pragma omp single nowait
+            {
+                get_triangulation(points_3d, points.size(), upper_chain, lower_chain);
+            }
+        }
     }
 
-    static float find_real_median(my::Point* local_set, size_t size) {
+    static REAL find_real_median(my::Point* local_set, size_t size) {
         // Create a vector from the raw pointer
         const auto mid_it = local_set + size / 2;
         std::nth_element(local_set, mid_it, local_set + size, [](const my::Point& a, const my::Point& b) {
@@ -90,9 +113,9 @@ public:
                 const my::Point& p4 = *std::next(upper_chain.begin());
                 const Circle c = circumcircle(p1, p4, p2);
                 if (isInside(c, p3)) {
-                    chains.push_back(std::vector{p1, p3});
+                    get_chain_output().push_back(std::vector{p1.getId(), p3.getId()});
                 } else {
-                    chains.push_back(std::vector{p2, p4});
+                    get_chain_output().push_back(std::vector{p2.getId(), p4.getId()});
                 }
             } else {
                 const std::list<my::Point>& long_chain = upper_chain.size() > lower_chain.size() ? upper_chain : lower_chain;
@@ -103,9 +126,9 @@ public:
                 const Circle c = circumcircle(p1, p2, p3);
                 const my::Point& p4 = *std::next(long_chain.begin());
                 if (isInside(c, p4)) {
-                    chains.push_back(std::vector{p3, p4});
+                    get_chain_output().push_back(std::vector{p1.getId(), p3.getId()});
                 } else {
-                    chains.push_back(std::vector{p1, p2});
+                    get_chain_output().push_back(std::vector{p2.getId(), p4.getId()});
                 }
             }
         } else if (size > 4) {
@@ -119,21 +142,23 @@ public:
             // const my::Point& p1 = *it;
             // const my::Point& prev = *std::prev(it);
             // const my::Point& next = *std::next(it);
-            chain_pairs.emplace_back(std::pair(upper_chain, lower_chain));
             triangulateio in, out;
             in.numberofpoints = size;
-            in.numberofpointattributes = 0;
+            in.numberofpointattributes = 1;
+            in.pointattributelist = new REAL[size];
             in.pointmarkerlist = nullptr;
             in.numberofholes = 0;
             in.numberofregions = 0;
             in.regionlist = nullptr;
-            in.pointlist = new float[size * 2];
+            in.pointlist = new REAL[size * 2];
             int idx = 0;
             for (const auto& p : upper_chain) {
+                in.pointattributelist[idx/ 2] = p.getId();
                 in.pointlist[idx++] = p.x;
                 in.pointlist[idx++] = p.y;
             }
             for (auto it = std::next(lower_chain.rbegin()); it != std::prev(lower_chain.rend()); ++it) {
+                in.pointattributelist[idx / 2] = it->getId();
                 in.pointlist[idx++] = it->x;
                 in.pointlist[idx++] = it->y;
             }
@@ -166,9 +191,17 @@ public:
             for (int i = 0; i < out.numberofedges; i++) {
                 const int first_idx = out.edgelist[i * 2];
                 const int second_idx = out.edgelist[i * 2 + 1];
-                chains.push_back(std::vector{my::Point(in.pointlist[first_idx * 2], in.pointlist[first_idx * 2 + 1]),
-                                  my::Point(in.pointlist[second_idx * 2], in.pointlist[second_idx * 2 + 1])});
+                const int first_id = in.pointattributelist[first_idx];
+                const int second_id = in.pointattributelist[second_idx];
+                auto& current_chain = get_chain_output();
+                current_chain.push_back(std::vector<int>{first_id, second_id});
+
+                // chains.push_back(std::vector{my::Point(in.pointlist[first_idx * 2], in.pointlist[first_idx * 2 + 1]),
+                //                   my::Point(in.pointlist[second_idx * 2], in.pointlist[second_idx * 2 + 1])});
             }
+            delete[] in.pointlist;
+            delete[] in.segmentlist;
+            delete[] in.pointattributelist;
         }
     }
 
@@ -177,7 +210,7 @@ public:
         if (local_set_size - upper_chain.size() - lower_chain.size() == -2) {
             return triangulate_polygon(upper_chain, lower_chain);
         }
-        sf::Vector2f median;
+        Vector2 median;
         auto upper_it = upper_chain.begin();
         auto lower_it = lower_chain.begin();
 
@@ -186,10 +219,10 @@ public:
         for (int i = 0; i < local_set_size; i++)
         {
             my::Point& p = local_set[i];
-            if (median_idx >= 0 && !p.onEdge) {
+            if (median_idx >= 0 && !p.onEdge()) {
                 median_idx--;
                 if (median_idx <= 0) {
-                    median = sf::Vector2f(p.x, p.y);
+                    median = Vector2(p.x, p.y);
                     break;
                 }
             }
@@ -210,14 +243,16 @@ public:
         // divide the points into two sets
         std::vector<my::Point> top_set, bottom_set;
         auto chain_point_it = middle_chain.begin();
+
         for (int i = 0; i < local_set_size; i++) {
             my::Point& p = local_set[i];
             if (chain_point_it != middle_chain.end() && *chain_point_it == p) {
-                p.onEdge = true;
+                p.setOnEdge();
                 chain_point_it = std::next(chain_point_it);
             }
-            if (!p.onEdge)
+            if (!p.onEdge())
             {
+                my::Point& prev_chain_point = *std::prev(chain_point_it);
                 if (p.y < median.y) {
                     bottom_set.push_back(p);
                 } else {
@@ -226,13 +261,19 @@ public:
             }
         }
         // END DIVIDE POINTS
+        auto& current_chain = get_chain_output();
+        current_chain.push_back(std::vector<int>());
+        auto& added_vec = current_chain.back();
+        added_vec.reserve(middle_chain.size());
+        for (const auto& p: middle_chain) {
+            added_vec.push_back(p.getId());
+        }
 
         auto mid_it = std::next(middle_chain.begin());
         upper_it = std::next(upper_chain.begin());
         lower_it = std::next(lower_chain.begin());
         auto upper_ref_it = middle_chain.begin();
         auto lower_ref_it = middle_chain.begin();
-        chains.push_back(std::vector<my::Point>(middle_chain.begin(), middle_chain.end())); // delete later
         MiddleChainState state = OVERLAPPING_NEITHER;
         std::list<my::Point>::const_iterator overlapping_it; // used by both chains
         if (*mid_it == *upper_it) {
@@ -249,10 +290,15 @@ public:
         while (*mid_it != *last_it)
         {
             while (*upper_it < *mid_it) {
+                if (state == OVERLAPPING_TOP) {
+                    state = OVERLAPPING_NEITHER;
+                    HANDLE_OVERLAPPING_TOP // erase upper chain until now and update start reference pointer
+                }
                 upper_it = std::next(upper_it);
             }
             if (*mid_it == *upper_it) {
                 switch (state) {
+                case OVERLAPPING_BOTTOM:
                     HANDLE_OVERLAPPING_BOTTOM
                     case OVERLAPPING_NEITHER:
                     upper_chain_pairs.emplace_back(std::array<std::list<my::Point>, 2>());
@@ -269,10 +315,15 @@ public:
                 upper_it = std::next(upper_it);
             } else {
                 while (*lower_it < *mid_it) {
+                    if (state == OVERLAPPING_BOTTOM) {
+                        state = OVERLAPPING_NEITHER;
+                        HANDLE_OVERLAPPING_BOTTOM
+                    }
                     lower_it = std::next(lower_it);
                 }
                 if (*mid_it == *lower_it) {
                     switch (state) {
+                    case OVERLAPPING_TOP:
                         HANDLE_OVERLAPPING_TOP
                         case OVERLAPPING_NEITHER:
                         // std::copy(lower_ref_it, mid_it, std::back_inserter(pairs[0])); // copy middle subchain
@@ -291,8 +342,10 @@ public:
                     lower_it = std::next(lower_it);
                 } else {
                     switch (state) {
+                    case OVERLAPPING_BOTTOM:
                     HANDLE_OVERLAPPING_BOTTOM
                         break;
+                    case OVERLAPPING_TOP:
                     HANDLE_OVERLAPPING_TOP
                         break;
                     case OVERLAPPING_NEITHER:
@@ -302,6 +355,20 @@ public:
                 }
             }
             mid_it = std::next(mid_it);
+        }
+        while (*upper_it != *last_it) {
+            if (state == OVERLAPPING_TOP) {
+                state = OVERLAPPING_NEITHER;
+                HANDLE_OVERLAPPING_TOP
+            }
+            upper_it = std::next(upper_it);
+        }
+        while (*lower_it != *last_it) {
+            if (state == OVERLAPPING_BOTTOM) {
+                state = OVERLAPPING_NEITHER;
+                HANDLE_OVERLAPPING_BOTTOM
+            }
+            lower_it = std::next(lower_it);
         }
         // end case:
         switch (state) {
@@ -339,20 +406,85 @@ public:
             assert(*pair[0].begin() == *pair[1].begin());
             assert(*std::prev(pair[0].end()) == *std::prev(pair[1].end()));
         }
+#ifndef NDEBUG
+        int main_up_upper_chain_idx = 0, main_up_lower_chain_idx = 0,
+            main_low_lower_chain_idx = 0, main_low_upper_chain_idx = 0;
+        auto up_upper_pt = upper_chain_pairs[main_up_upper_chain_idx][0].begin();
+        auto up_lower_pt = upper_chain_pairs[main_low_upper_chain_idx][1].begin();
+        auto low_upper_pt = lower_chain_pairs[main_up_lower_chain_idx][0].begin();
+        auto low_lower_pt = lower_chain_pairs[main_low_lower_chain_idx][1].begin();
+        for (int i = 0; i < local_set_size; i++) {
+            my::Point& p = local_set[i];
+            if (!p.onEdge()) continue;
+            bool p_found = false;
+            while (p == *up_upper_pt) {
+                p_found = true;
+                up_upper_pt++;
+                if (up_upper_pt == upper_chain_pairs[main_up_upper_chain_idx][0].end() && main_up_upper_chain_idx < upper_chain_pairs.size() - 1) {
+                    main_up_upper_chain_idx++;
+                    up_upper_pt = upper_chain_pairs[main_up_upper_chain_idx][0].begin();
+                }
+            }
+            while (p == *up_lower_pt) {
+                p_found = true;
+                up_lower_pt++;
+                if (up_lower_pt == upper_chain_pairs[main_low_upper_chain_idx][1].end() && main_low_upper_chain_idx < upper_chain_pairs.size() - 1) {
+                    main_low_upper_chain_idx++;
+                    up_lower_pt = upper_chain_pairs[main_low_upper_chain_idx][1].begin();
+                }
+            }
+            while (p == *low_upper_pt) {
+                p_found = true;
+                low_upper_pt++;
+                if (low_upper_pt == lower_chain_pairs[main_up_lower_chain_idx][0].end() && main_up_lower_chain_idx < lower_chain_pairs.size() - 1) {
+                    main_up_lower_chain_idx++;
+                    low_upper_pt = lower_chain_pairs[main_up_lower_chain_idx][0].begin();
+                }
+            }
+            while (p == *low_lower_pt) {
+                p_found = true;
+                low_lower_pt++;
+                if (low_lower_pt == lower_chain_pairs[main_low_lower_chain_idx][1].end() && main_low_lower_chain_idx < lower_chain_pairs.size() - 1) {
+                    main_low_lower_chain_idx++;
+                    low_lower_pt = lower_chain_pairs[main_low_lower_chain_idx][1].begin();
+                }
+            }
+            assert(p_found);
+        }
+#endif
+
 
         // END TRIM CHAINS
-        //float med_left_y = left_set.size() != 0 ? find_real_median(left_set.data(), left_set.size()): INFINITY;
-        //float med_right_y = right_set.size() != 0 ? find_real_median(right_set.data(), right_set.size()): INFINITY;
+        //REAL med_left_y = left_set.size() != 0 ? find_real_median(left_set.data(), left_set.size()): INFINITY;
+        //REAL med_right_y = right_set.size() != 0 ? find_real_median(right_set.data(), right_set.size()): INFINITY;
 
         delete[] local_set;
-        process_chain_pairs(upper_chain_pairs, top_set);
-        process_chain_pairs(lower_chain_pairs, bottom_set);
+#pragma omp parallel sections
+        {
+#pragma omp section
+            {
+                process_chain_pairs(upper_chain_pairs, top_set);
+            }
+#pragma omp section
+            {
+                process_chain_pairs(lower_chain_pairs, bottom_set);
+            }
+        }
+
+
+        // process_chain_pairs(upper_chain_pairs, top_set);
+        // process_chain_pairs(lower_chain_pairs, bottom_set);
     }
 
 private:
-    std::vector<sf::Vector2f> merge(const std::vector<sf::Vector2f>& left, const std::vector<sf::Vector2f>& right) {
+    std::vector<Vector2> merge(const std::vector<Vector2>& left, const std::vector<Vector2>& right) {
         //todo
-        return std::vector<sf::Vector2f>();
+        return std::vector<Vector2>();
+    }
+
+    inline std::vector<std::vector<int>>& get_chain_output() const {
+        const int thread_id = /*omp_get_thread_num();*/ 0;
+        return chains[thread_id];
     }
 
     template <typename Iterator>
@@ -381,12 +513,11 @@ private:
             }
 
             const my::Point* const lcl_base_end = base_ptr + idx;
-            #pragma omp task firstprivate(lcl_base_end, base_ptr, i)
             {
                 auto& pair = chain_pairs[i];
                 auto& sub_upper_chain = pair[0];
                 auto& sub_lower_chain = pair[1];
-                auto& end_point = sub_upper_chain.back();
+                my::Point& end_point = sub_upper_chain.back();
                 int size = (lcl_base_end - base_ptr) + sub_upper_chain.size() + sub_lower_chain.size() - 2;
                 const auto sub_local_set = new my::Point[(lcl_base_end - base_ptr) + sub_upper_chain.size() + sub_lower_chain.size() - 2];
                 auto sub_upper_it = std::next(sub_upper_chain.begin());
@@ -402,6 +533,10 @@ private:
                     if (base_ptr < lcl_base_end &&
                         (sub_upper_it == sub_upper_end || *base_ptr < *sub_upper_it) &&
                         (sub_lower_it == sub_lower_chain.end() || *base_ptr < *sub_lower_it)) {
+                        auto prev_upper_it = std::prev(sub_upper_it);
+                        auto prev_lower_it = std::prev(sub_lower_it);
+                        assert(isBelowLine(*prev_upper_it, *sub_upper_it, *base_ptr));
+                        assert(!isBelowLine(*prev_lower_it, *sub_lower_it, *base_ptr));
                         sub_local_set[point_idx++] = *base_ptr;
                         base_ptr++;
                         }
@@ -422,32 +557,36 @@ private:
     }
 
     struct Circle {
-        float x,y,r;
+        REAL x,y,r;
     };
 
     static Circle circumcircle(const my::Point& a, const my::Point& b, const my::Point& c) {
-        float A = b.x - a.x;
-        float B = b.y - a.y;
-        float C = c.x - a.x;
-        float D = c.y - a.y;
+        REAL A = b.x - a.x;
+        REAL B = b.y - a.y;
+        REAL C = c.x - a.x;
+        REAL D = c.y - a.y;
 
-        float E = A * (a.x + b.x) + B * (a.y + b.y);
-        float F = C * (a.x + c.x) + D * (a.y + c.y);
-        float G = 2.0 * (A * (c.y - b.y) - B * (c.x - b.x));
+        REAL E = A * (a.x + b.x) + B * (a.y + b.y);
+        REAL F = C * (a.x + c.x) + D * (a.y + c.y);
+        REAL G = 2.0 * (A * (c.y - b.y) - B * (c.x - b.x));
 
 
-        float cx = (D * E - B * F) / G;
-        float cy = (A * F - C * E) / G;
+        REAL cx = (D * E - B * F) / G;
+        REAL cy = (A * F - C * E) / G;
 
-        float dx = cx - a.x;
-        float dy = cy - a.y;
-        float radius = std::sqrt(dx * dx + dy * dy);
+        REAL dx = cx - a.x;
+        REAL dy = cy - a.y;
+        REAL radius = std::sqrt(dx * dx + dy * dy);
 
         return Circle{cx, cy, radius};
     }
 
     static bool isInside(const Circle& circle, const my::Point& p) {
         return (p.x - circle.x) * (p.x - circle.x) + (p.y - circle.y) * (p.y - circle.y) < circle.r * circle.r;
+    }
+
+    static bool isBelowLine(const my::Point& a, const my::Point& b, const my::Point& p) {
+        return (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x) < 0;
     }
 };
 

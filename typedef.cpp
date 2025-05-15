@@ -2,8 +2,9 @@
 // Created by serdar on 4/5/25.
 //
 #include "typedef.h"
+#include <cstdlib>
 
-sf::Color get_random_color(unsigned int seed) {
+glm::vec3 get_random_color(unsigned int seed) {
     if (seed != UINT32_MAX) {
         srand(seed);
     }
@@ -13,7 +14,7 @@ sf::Color get_random_color(unsigned int seed) {
         g = rand() % 256;
         b = rand() % 256;
     } while (r + g + b > 600);
-    return sf::Color(r, g, b);
+    return glm::vec3(r / 255.0f, g / 255.0f, b / 255.0f);
 }
 
-constexpr unsigned int last_bit = 1 << 31;
+
