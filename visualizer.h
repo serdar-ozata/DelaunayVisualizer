@@ -48,6 +48,12 @@ const std::vector<const char*> deviceExtensions = {
     VK_KHR_SWAPCHAIN_EXTENSION_NAME
 };
 
+enum class ColorMode {
+    Static,
+    Pulse,
+    Rainbow
+};
+
 #ifdef NDEBUG
 const bool enableValidationLayers = false;
 #else
@@ -488,7 +494,9 @@ private:
     void static scrollCB(GLFWwindow* window, double xoffset, double yoffset) {
         auto app = static_cast<TriangulationVisualizer*>(glfwGetWindowUserPointer(window));
         if (ImGui::GetIO().WantCaptureMouse) return;
-        app->zoom *= (yoffset > 0) ? 1.1f : 0.9f;
+        const float mult = (yoffset > 0) ? 1.1f : 0.9f;;
+        app->zoom *= mult;
+        app->offset *= mult;
     }
 
     void initGLFWEvents() const {
@@ -954,7 +962,8 @@ private:
         transformDataPointers = new void*[MAX_FRAMES_IN_FLIGHT];
         for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
             constexpr VkDeviceSize transformBufferSize = sizeof(UniformData);
-            createBuffer(transformBufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, transformBuffers[i]);
+            createBuffer(transformBufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, transformBuffers[i]);
         }
         // Allocate transform buffer memory (host-visible, one per frame)
         VkMemoryRequirements transformReq;
@@ -1300,14 +1309,54 @@ private:
             ImGui::Text("GPU Utilization: %.2f%%, Memory: %.2f%%", gpuStats.gpuUtilPercent, gpuStats.memUtilPercent);
             ImGui::End();
         }
+        static ColorMode colorMode = ColorMode::Static;
+        static glm::vec3 pickedColor = glm::vec3(1.0f, 1.0f, 1.0f);
         if (control_panel) {
             ImGui::SetNextWindowPos(ImVec2(1, 1), ImGuiCond_Once);
             ImGui::Begin("Control Panel");
-            static glm::vec3 pickedColor = glm::vec3(1.0f, 1.0f, 1.0f);
+
             ImGui::ColorPicker3("Color", glm::value_ptr(pickedColor));
-            changeColor(pickedColor);
+            const char* modes[] = { "Static", "Pulse", "Rainbow" };
+            static int currentMode = 0;
+            if (ImGui::Combo("Mode", &currentMode, modes, IM_ARRAYSIZE(modes))) {
+                colorMode = static_cast<ColorMode>(currentMode);
+            }
             ImGui::End();
         }
+        changeColor(getAnimatedColor(colorMode, pickedColor, ImGui::GetTime()));
+    }
+
+    glm::vec3 getAnimatedColor(ColorMode mode, const glm::vec3& baseColor, float time) {
+        switch (mode) {
+        case ColorMode::Static:
+            return baseColor;
+
+        case ColorMode::Pulse: {
+            float factor = 0.5f + 0.5f * sin(time * 2.0f);  // 0..1
+            return baseColor * factor;
+        }
+
+        case ColorMode::Rainbow: {
+            float hue = fmod(time * 0.2f, 1.0f);  // cycles every 5s
+            float r, g, b;
+
+            // Simple HSV to RGB
+            int i = int(hue * 6.0f);
+            float f = hue * 6.0f - i;
+            float q = 1.0f - f;
+
+            switch (i % 6) {
+            case 0: r = 1, g = f, b = 0; break;
+            case 1: r = q, g = 1, b = 0; break;
+            case 2: r = 0, g = 1, b = f; break;
+            case 3: r = 0, g = q, b = 1; break;
+            case 4: r = f, g = 0, b = 1; break;
+            case 5: r = 1, g = 0, b = q; break;
+            }
+            return glm::vec3(r, g, b);
+        }
+        }
+        return baseColor;
     }
 
     void changeColor(const glm::vec3& color) const {
