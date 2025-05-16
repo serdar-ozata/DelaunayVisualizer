@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD 20)
 # vulkan and glfw
 find_package(Vulkan REQUIRED)
 find_package(glfw3 3.3 REQUIRED)
-#find_package(OpenMP REQUIRED)
+find_package(OpenMP REQUIRED)
 
 set(IMGUI_DIR "${CMAKE_SOURCE_DIR}/../../libs/imgui")
 set(IMGUI_SOURCES
@@ -87,9 +87,9 @@ target_link_libraries(cs564project
         Vulkan::Vulkan
         glfw
         ${NVML_LIBRARY}
-#        OpenMP::OpenMP_CXX
+        OpenMP::OpenMP_CXX
 )
 
 # Optional compile flags
-target_compile_options(cs564project PRIVATE -frounding-math -ffast-math)
+target_compile_options(cs564project PRIVATE -frounding-math -ffast-math -fopenmp)
 target_compile_definitions(cs564project PRIVATE DOUBLE_REAL)

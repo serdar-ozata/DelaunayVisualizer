@@ -5,7 +5,9 @@
 #include "quick_hull.h"
 
 #include <array>
+#include <cstdio>
 #include <math.h>
+#include <omp.h>
 #define CALCULATE_SIDE(left, right, p) \
 (((right.x) - (left.x)) * ((p.z) - (left.z)) - ((right.z) - (left.z)) * ((p.x) - (left.x)))
 
@@ -46,9 +48,13 @@ std::array<std::list<my::Point>, 2> quick_hull(const my::Point* lpoints, const i
 
     const std::list<my::Point>::const_iterator rightStartPtr = hullR.begin();
     const std::list<my::Point>::const_iterator leftStartPtr = hullL.begin();
+#pragma omp task
     find_hull(leftStartPtr, left_set, hullL, false);
+#pragma omp task
     find_hull(rightStartPtr, right_set, hullR, true);
-
+    // find_hull(leftStartPtr, left_set, hullL, false);
+    // find_hull(rightStartPtr, right_set, hullR, true);
+#pragma omp taskwait
     return std::array{hullL, hullR};
 }
 
@@ -86,7 +92,7 @@ std::list<my::Point> lifted_quick_hull(my::Point* lpoints, int size) {
 
 void find_hull(const std::list<my::Point>::const_iterator leftIt,
     const std::vector<my::Point>& local_points,
-    std::list<my::Point>& hull, const bool counter_clockwise) {
+    std::list<my::Point>& hull, const bool counter_clockwise, const int depth) {
     if (local_points.empty()) {
         return;
     }
@@ -124,8 +130,13 @@ void find_hull(const std::list<my::Point>::const_iterator leftIt,
     }
 
     const std::list<my::Point>::const_iterator farthestIt = std::next(leftIt);
-    find_hull(leftIt, left_set, hull, counter_clockwise);
-    find_hull(farthestIt, right_set, hull, counter_clockwise);
+// #pragma omp task
+    find_hull(leftIt, left_set, hull, counter_clockwise, depth + 1);
+// #pragma omp task
+    find_hull(farthestIt, right_set, hull, counter_clockwise, depth + 1);
+    // find_hull(leftIt, left_set, hull, counter_clockwise, depth + 1);
+    // find_hull(farthestIt, right_set, hull, counter_clockwise, depth + 1);
+// #pragma omp taskwait
 }
 
 inline REAL line_distance(const my::Point& a, const my::Point& b, const my::Point& p) {

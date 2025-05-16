@@ -14,6 +14,8 @@
 #include <string>
 // #include <omp.h>
 #include <iostream>
+#include <omp.h>
+
 extern "C" {
 #include "triangle/triangle.h"
 }
@@ -35,7 +37,7 @@ public:
     }
     const std::vector<Vector2>& points;
     std::vector<REAL> medians_y;
-    std::vector<std::vector<int>>* chains = new std::vector<std::vector<int>>[/*omp_get_max_threads()*/ 1];
+    std::vector<std::vector<int>>* chains = new std::vector<std::vector<int>>[omp_get_max_threads()];
     void solve() {
         int random_index = rand() % points.size();
         REAL med_y = points[random_index].y;
@@ -44,14 +46,25 @@ public:
             std::cerr << "There are too many points! Integer overflow may occur." << std::endl;
             exit(EXIT_FAILURE);
         }
-
         for (int i = 0; i < points.size(); i++) {
             points_3d[i].x = points[i].x;
             points_3d[i].y = points[i].y;
             points_3d[i].z = points[i].y;
             points_3d[i].id = i;
         }
-        auto [lower_chain, upper_chain] = quick_hull(points_3d, points.size());
+        // auto quick_hull_start = omp_get_wtime();
+        std::list<my::Point> lower_chain, upper_chain;
+#pragma omp parallel
+        {
+#pragma omp single
+        {
+            auto p = quick_hull(points_3d, points.size());
+            lower_chain = p[0];
+            upper_chain = p[1];
+        }
+        }
+        // auto quick_hull_end = omp_get_wtime();
+        // std::cout << "Quick hull time: " << quick_hull_end - quick_hull_start << " seconds" << std::endl;
         auto& current_chain = chains[0];
         current_chain.push_back(std::vector<int>());
         auto& added_vec = current_chain.back();
@@ -80,11 +93,16 @@ public:
         }
 #pragma omp parallel
         {
-#pragma omp single nowait
+#pragma omp single
             {
                 get_triangulation(points_3d, points.size(), upper_chain, lower_chain);
             }
         }
+        for (int i = 0; i < omp_get_max_threads(); i++) {
+            printf("t%d: %d, ", i, (int)chains[i].size());
+        }
+        std::cout << std::endl;
+
     }
 
     static REAL find_real_median(my::Point* local_set, size_t size) {
@@ -459,21 +477,11 @@ public:
         //REAL med_right_y = right_set.size() != 0 ? find_real_median(right_set.data(), right_set.size()): INFINITY;
 
         delete[] local_set;
-#pragma omp parallel sections
-        {
-#pragma omp section
-            {
-                process_chain_pairs(upper_chain_pairs, top_set);
-            }
-#pragma omp section
-            {
-                process_chain_pairs(lower_chain_pairs, bottom_set);
-            }
-        }
-
-
-        // process_chain_pairs(upper_chain_pairs, top_set);
-        // process_chain_pairs(lower_chain_pairs, bottom_set);
+#pragma omp task
+        process_chain_pairs(upper_chain_pairs, top_set);
+#pragma omp task
+        process_chain_pairs(lower_chain_pairs, bottom_set);
+#pragma omp taskwait
     }
 
 private:
@@ -483,7 +491,7 @@ private:
     }
 
     inline std::vector<std::vector<int>>& get_chain_output() const {
-        const int thread_id = /*omp_get_thread_num();*/ 0;
+        const int thread_id = omp_get_thread_num();
         return chains[thread_id];
     }
 

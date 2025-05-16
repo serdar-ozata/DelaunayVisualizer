@@ -4,7 +4,7 @@
 
 #ifndef CS564PROJECT_VISUALIZER_H
 #define CS564PROJECT_VISUALIZER_H
-
+#include <chrono>
 #include "typedef.h"
 #include "delaunay_triangulation.h"
 #define GLFW_INCLUDE_VULKAN
@@ -29,6 +29,7 @@
 #include <limits>
 #include <array>
 #include <numeric>
+#include <omp.h>
 #include <optional>
 #include <set>
 
@@ -144,7 +145,11 @@ typedef struct VkAppParameters{
     delaunay_triangulation dt;
 
     VkAppParameters(std::vector<Vector2>& points) : points(points), dt(points) {
+        auto start = std::chrono::high_resolution_clock::now();
         dt.solve();
+        auto end = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double> elapsed = end - start;
+        std::cout << "Triangulation time: " << elapsed.count() << " seconds" << std::endl;
     }
 } VkAppParameters;
 
@@ -976,7 +981,7 @@ private:
 
     void createVertexBuffer() {
         const VkDeviceSize vertexBufferSize  = sizeof(Vertex) * p.points.size();
-        const int num_threads = /*omp_get_max_threads();*/ 1;
+        const int num_threads = omp_get_max_threads();
         indexBufferSize = 0;
         for (int i = 0; i < num_threads; i++) {
             for (auto& chain : p.dt.chains[i]) {

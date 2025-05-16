@@ -12,7 +12,8 @@ std::array<std::list<my::Point>, 2> quick_hull(const my::Point* lpoints, int siz
 
 std::list<my::Point> lifted_quick_hull(my::Point* lpoints, int size);
 
-void find_hull(std::list<my::Point>::const_iterator leftIt, const std::vector<my::Point>& local_points, std::list<my::Point>& hull, const bool counter_clockwise);
+void find_hull(std::list<my::Point>::const_iterator leftIt, const std::vector<my::Point>& local_points, std::list<my::Point>& hull,
+    const bool counter_clockwise, const int depth = 0);
 
 inline REAL line_distance(const my::Point& a, const my::Point& b, const my::Point& p);
 
