@@ -76,6 +76,35 @@ namespace my
             return id & ~last_bit;
         }
     };
+
+    struct LineF {
+        float x1, y1, x2, y2;
+        LineF(float x1, float y1, float x2, float y2) : x1(x1), y1(y1), x2(x2), y2(y2) {}
+
+        bool operator==(const LineF& other) const {
+            return (x1 == other.x1 && y1 == other.y1 && x2 == other.x2 && y2 == other.y2);
+        }
+        bool operator!=(const LineF& other) const {
+            return !(*this == other);
+        }
+        // only compares the start
+        bool operator<(const LineF& other) const {
+            return (x1 < other.x1 || (x1 == other.x1 && y1 < other.y1));
+        }
+
+        bool operator>(const LineF& other) const {
+            return (x1 > other.x1 || (x1 == other.x1 && y1 > other.y1));
+        }
+
+        bool operator<=(const LineF& other) const {
+            return (x1 < other.x1 || (x1 == other.x1 && y1 <= other.y1));
+        }
+
+        bool operator>=(const LineF& other) const {
+            return (x1 > other.x1 || (x1 == other.x1 && y1 >= other.y1));
+        }
+
+    };
 }
 
 

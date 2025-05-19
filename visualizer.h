@@ -16,7 +16,6 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
-#include <glm/gtc/matrix_inverse.hpp>
 
 #include <iostream>
 #include <fstream>
@@ -32,8 +31,12 @@
 #include <omp.h>
 #include <optional>
 #include <set>
+#include <atomic>
+#include <thread>
 
 #include "GpuStats.h"
+#include "omp_quicksort.h"
+#include "plane_sampler.h"
 
 constexpr uint32_t INITIAL_WIDTH = 1920;
 constexpr uint32_t INITIAL_HEIGHT = 1080;
@@ -145,14 +148,20 @@ struct Vertex {
 //     0, 1, 2, 3
 // };
 
+
 typedef struct VkAppParameters{
     int msaa_bits = 1;
-    std::vector<Vector2>& points;
-    delaunay_triangulation dt;
+    std::vector<Vector2> points;
+    delaunay_triangulation* dt;
+    int n;
+    PlaneSamplerData planeSamplerData;
 
-    VkAppParameters(std::vector<Vector2>& points) : points(points), dt(points) {
+    VkAppParameters(int n): dt(nullptr), n(n) {
+    }
+
+    void solve() {
         auto start = std::chrono::high_resolution_clock::now();
-        dt.solve();
+        dt->solve();
         auto end = std::chrono::high_resolution_clock::now();
         std::chrono::duration<double> elapsed = end - start;
         std::cout << "Triangulation time: " << elapsed.count() << " seconds" << std::endl;
@@ -164,6 +173,8 @@ typedef struct {
     glm::vec4 color;
 }  UniformData;
 
+
+
 class TriangulationVisualizer {
 public:
     TriangulationVisualizer(VkAppParameters p): p(p) {
@@ -173,7 +184,38 @@ public:
         initImgui();
     }
     void run() {
-        mainLoop();
+        std::thread renderThread([this]() {
+            mainLoop();
+        });
+        p.points = generatePoints(p.n, p.planeSamplerData);
+        for (int i = 0; i < p.points.size() - 1; i++) {
+            if (p.points[i].x == p.points[i + 1].x && p.points[i].y == p.points[i + 1].y) {
+                std::cerr << "Duplicate points detected. Exiting." << std::endl;
+                exit(EXIT_FAILURE);
+            }
+        }
+        progressBar.store(0.1f);
+        {
+            std::lock_guard<std::mutex> lock(statusMutex);
+            snprintf(statusText, sizeof(statusText), "Sorting %s points in parallel", formatInt(p.n).c_str());
+        }
+        run_parallel_quicksort(p.points.data(), p.points .size());
+        progressBar.store(0.35f);
+        {
+            std::lock_guard<std::mutex> lock(statusMutex);
+            snprintf(statusText, sizeof(statusText), "Performing delaunay triangulation");
+        }
+        p.dt = new delaunay_triangulation(p.points);
+        p.solve();
+        {
+            std::lock_guard<std::mutex> lock(statusMutex);
+            snprintf(statusText, sizeof(statusText), "Loading to GPU");
+        }
+        progressBar.store(0.8f);
+        createVertexBuffer();
+        progressBar.store(0.9f);
+        doneGenerating.store(true);
+        renderThread.join();
         cleanup();
     }
 
@@ -181,8 +223,12 @@ private:
     GLFWwindow* window;
 
     int width, height;
+    char statusText[100] = "Starting...";
+    std::mutex statusMutex;
+    std::atomic<float> progressBar = 0.0f;
+    std::atomic<bool> doneGenerating{false};
 
-    const VkAppParameters& p;
+    VkAppParameters& p;
 
     bool mouseHeld = false;
     float zoom = 1.0f;
@@ -253,6 +299,20 @@ private:
         app->framebufferResized = true;
     }
 
+    std::string formatInt(int value) {
+        if (value > 1'000'000) {
+            int remainder = value % 1'000'000;
+            int quotient = value / 1'000'000;
+            return std::to_string(quotient) + "," + std::to_string(remainder / 1'000) + "M";
+        } else if (value > 1'000) {
+            int remainder = value % 1'000;
+            int quotient = value / 1'000;
+            return std::to_string(quotient) + "," + std::to_string(remainder);
+        } else {
+            return std::to_string(value);
+        }
+    }
+
     void initVulkan() {
         createInstance();
         setupDebugMessenger();
@@ -267,7 +327,7 @@ private:
         createGraphicsPipeline();
         createFramebuffers();
         createCommandPool();
-        createVertexBuffer();
+        // createVertexBuffer();
         createCommandBuffers();
         createSyncObjects();
     }
@@ -826,8 +886,8 @@ private:
 
         VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
         inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-        inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_LINE_STRIP;
-        inputAssembly.primitiveRestartEnable = VK_TRUE;
+        inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+        inputAssembly.primitiveRestartEnable = VK_FALSE;
 
         VkPipelineViewportStateCreateInfo viewportState{};
         viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
@@ -990,14 +1050,22 @@ private:
 
     void createVertexBuffer() {
         const VkDeviceSize vertexBufferSize  = sizeof(Vertex) * p.points.size();
+        unsigned int* edgeCounts = new unsigned int[p.points.size()];
+        memset(edgeCounts, 0, sizeof(unsigned int) * (p.points.size() + 1));
         const int num_threads = omp_get_max_threads();
         indexBufferSize = 0;
         for (int i = 0; i < num_threads; i++) {
-            for (auto& chain : p.dt.chains[i]) {
-                indexBufferSize += chain.size() + 1;
+            for (auto& chain : p.dt->chains[i]) {
+                indexBufferSize += 2 * chain.size() - 2;
+                for (int j = 0; j < chain.size() - 1; j++) {
+                    edgeCounts[chain[j] + 1]++;
+                }
             }
         }
         indexBufferSize *= sizeof(uint32_t);
+        for (int i = 0; i < p.points.size(); i++) {
+            edgeCounts[i + 1] += edgeCounts[i];
+        }
 
         // Create GPU-local buffers
         createBuffer(vertexBufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, vertexBuffer);
@@ -1029,7 +1097,6 @@ private:
 
         vkBindBufferMemory(device, vertexBuffer, vtxIdxDeviceOnlyMemory, vertexOffset);
         vkBindBufferMemory(device, indexBuffer, vtxIdxDeviceOnlyMemory, indexOffset);
-
 
         // Create staging buffers
         VkBuffer vtxStagingBuffer, idxStagingBuffer;
@@ -1078,14 +1145,17 @@ private:
         vkMapMemory(device, stagingBufferMemory, stagingIndexOffset, indexBufferSize, 0, &data);
         uint32_t* casted_data = static_cast<uint32_t*>(data);
         for (int i = 0; i < num_threads; i++) {
-            for (auto& chain : p.dt.chains[i]) {
-                memcpy(casted_data, chain.data(), chain.size() * sizeof(uint32_t));
-                casted_data += chain.size();
-                *casted_data = 0xFFFFFFFF; // End of chain
-                casted_data++;
+            for (auto& chain : p.dt->chains[i]) {
+                for (int j = 1; j < chain.size(); j++) {
+                    unsigned int& idx = edgeCounts[chain[j - 1]];
+                    casted_data[idx * 2] = chain[j - 1];
+                    casted_data[idx * 2 + 1] = chain[j];
+                    idx++;
+                }
             }
         }
         vkUnmapMemory(device, stagingBufferMemory);
+        delete[] edgeCounts;
 
         // Copy from staging to device-local
         copyBuffer(vtxStagingBuffer, vertexBuffer, vertexBufferSize);
@@ -1220,16 +1290,25 @@ private:
         scissor.offset = {0, 0};
         scissor.extent = swapChainExtent;
         vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+        if (doneGenerating) {
+            VkBuffer vertexBuffers[] = {vertexBuffer};
+            VkDeviceSize offsets[] = {0};
+            vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
+            vkCmdBindIndexBuffer(commandBuffer, indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSets[currentFrame], 0, nullptr);
 
-        VkBuffer vertexBuffers[] = {vertexBuffer};
-        VkDeviceSize offsets[] = {0};
-        vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
-        vkCmdBindIndexBuffer(commandBuffer, indexBuffer, 0, VK_INDEX_TYPE_UINT32);
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSets[currentFrame], 0, nullptr);
-
-        // vkCmdDraw(commandBuffer, static_cast<uint32_t>(p.points.size()), 1, 0, 0);
-        vkCmdDrawIndexed(commandBuffer, static_cast<uint32_t>(indexBufferSize/ sizeof(uint32_t)) , 1, 0, 0, 0);
-
+            // vkCmdDraw(commandBuffer, static_cast<uint32_t>(p.points.size()), 1, 0, 0);
+            vkCmdDrawIndexed(commandBuffer, static_cast<uint32_t>(indexBufferSize/ sizeof(uint32_t)) , 1, 0, 0, 0);
+        } else {
+            // Draw the loading screen
+            char localCopy[100];
+            {
+                std::lock_guard<std::mutex> lock(statusMutex);
+                strncpy(localCopy, statusText, sizeof(localCopy));
+            }
+            renderLoadingScreen(progressBar, localCopy);
+        }
+        ImGui::Render();
         ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), commandBuffer);
         vkCmdEndRenderPass(commandBuffer);
 
@@ -1270,6 +1349,37 @@ private:
         //     offset.x, offset.y, 0.0f, 1.0f
         // );
         transformData.transform = transform;
+    }
+
+    void renderLoadingScreen(float progress, const char* message = "Loading...") {
+        ImGuiIO& io = ImGui::GetIO();
+
+        // Window size and position
+        const ImVec2 windowSize(500, 140); // Increased size
+        const ImVec2 windowPos((io.DisplaySize.x - windowSize.x) * 0.5f,
+                               (io.DisplaySize.y - windowSize.y) * 0.5f);
+
+        ImGui::SetNextWindowPos(windowPos, ImGuiCond_Always);
+        ImGui::SetNextWindowSize(windowSize, ImGuiCond_Always);
+
+        // Style the loading window
+        ImGui::Begin("Loading", nullptr,
+        ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
+        ImGuiWindowFlags_NoSavedSettings);
+
+        static float dotTimer = 0.0f;
+        dotTimer += io.DeltaTime;
+        int dotCount = static_cast<int>(dotTimer * 3.0f) % 4;
+        std::string animatedMsg = "Loading" + std::string(dotCount, '.');
+        ImGui::Text(animatedMsg.c_str());
+        ImGui::Spacing();
+
+        ImGui::Text("%s", message);
+
+        ImGui::Spacing();
+        ImGui::ProgressBar(progress, ImVec2(-1.0f, 0), "");
+
+        ImGui::End();
     }
 
     void renderIMGUI() {
@@ -1386,9 +1496,6 @@ private:
         ImGui::NewFrame();
         renderIMGUI();
         updateTransformMat();
-        ImGui::Render();
-
-
         recordCommandBuffer(commandBuffers[currentFrame], imageIndex);
 
         VkSubmitInfo submitInfo{};
@@ -1637,6 +1744,18 @@ private:
         return VK_FALSE;
     }
 
+    static std::vector<Vector2> generatePoints(const int& n, const PlaneSamplerData& pData) {
+        switch (pData.type) {
+        case 0: // gaussian
+            return gaussian_plane(n, pData.sigma, pData.mu);
+        case 1: // uniform
+             return uniform_plane(n, pData.x_min, pData.x_max, pData.y_min, pData.y_max);
+        case 2:
+            return circle_plane(n, pData.r);
+        default:
+            throw std::runtime_error("Unknown plane type");
+        }
+    }
 
 };
 #endif //CS564PROJECT_VISUALIZER_H

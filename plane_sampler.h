@@ -10,6 +10,14 @@
 typedef std::vector<Vector2> plane_t;
 
 
+typedef struct {
+    int x_min, x_max, y_min, y_max;
+    int sigma = 500, mu = 0;
+    int r;
+    int type = 0; // 0: gaussian, 1: uniform, 2: circle
+} PlaneSamplerData;
+
+
 plane_t uniform_plane(int n, double x_min, double x_max, double y_min, double y_max);
 
 plane_t gaussian_plane(int n, double sigma, double mu);

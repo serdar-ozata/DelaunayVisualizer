@@ -9,14 +9,53 @@
 
 
 namespace qs {
-    inline bool compare(const Vector2& a, const Vector2& b) {
+    template <typename T>
+    bool compare(const T& a, const T& b) {
         return a.x < b.x || (a.x == b.x && a.y < b.y);
     }
-    int partition(Vector2* arr, int low, int high);
-    void quicksort(Vector2* arr, int low, int high, int depth = 0);
+    template <typename T>
+    int partition(T* arr, const int low, const int high) {
+        const T pivot = arr[high];
+        int i = low - 1;
+
+        for(int j = low; j < high; ++j) {
+            if(compare(arr[j], pivot)) {
+                ++i;
+                std::swap(arr[i], arr[j]);
+            }
+        }
+
+        std::swap(arr[i + 1], arr[high]);
+        return i + 1;
+    }
+    template <typename T>
+    void quicksort(T* arr, const int low, int high, const int depth) {
+        if(low < high) {
+            int pi = partition(arr, low, high);
+#pragma omp parallel sections if(depth < 4)
+            {
+#pragma omp section
+                quicksort(arr, low, pi - 1, depth + 1);
+
+#pragma omp section
+                quicksort(arr, pi + 1, high, depth + 1);
+            }
+        }
+    }
 }
 
 // Function to run parallel quicksort
-void run_parallel_quicksort(Vector2* arr, int size);
+template <typename T>
+void run_parallel_quicksort(T* arr, const int size) {
+    {
+#pragma omp parallel
+        {
+#pragma omp single nowait
+            {
+                qs::quicksort(arr, 0, size - 1, 0);
+            }
+        }
+    }
+}
 
 #endif //OMP_QUICKSORT_H
