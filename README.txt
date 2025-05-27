@@ -1,18 +1,22 @@
 The binary fetches shaders files using ../shaders/*.frag and ../shaders/*.vert so. So you must be in the build directory to run the executable.
 
-The code is run on Arch Linux x86_64. You may directly use the binaries in cmake-build-* if compatible.
 
-You need an Nvidia GPU.
 The required libraries are:
 - Vulkan SDK
 - GLFW
 - GLM
-- ImGui
+- ImGui (you must define IMGUI_DIR in CMakeLists.txt to the path of the library)
 - OpenMP
-- NVML (usually installed with the Nvidia driver)
+- NVML (optional, define NVML_LIB_PATH in CMakeLists.txt to the path of the library)
 
-You need to manually install the imgui and update line 11 in CMakeLists.txt to point to the correct location.
-Triangle can be compiled by `make` in the triangle directory. The makefile is modified. You can change it if you want to.
+You need to manually install the imgui: https://github.com/ocornut/imgui
 All other libraries should be handled by CMake.
 
-There is real type option in the CMakeLists.txt: float or double. If you change it you must also recompile the triangle library. For float type, activate the -DSINGLE switch.
+There is a "real type" option in the CMakeLists.txt: float or double (default). If you want to change it, you must also recompile the triangle library.
+Activate the -DSINGLE switch in the CMakeLists.txt to use float instead of double and run make distclean && make trilibrary inside the triangle directory.
+
+Compile the project with:
+mkdir build
+cd build
+cmake .. -DIMGUI_DIR=path/to/imgui -DNVML_LIB_PATH=path/to/nvml
+make

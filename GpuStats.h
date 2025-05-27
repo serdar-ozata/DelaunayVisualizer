@@ -4,7 +4,7 @@
 
 #ifndef GPUSTATS_H
 #define GPUSTATS_H
-
+#ifdef ENABLE_GPUSTATS
 #include <nvml.h>
 #include <string>
 #include <iostream>
@@ -78,5 +78,5 @@ private:
     bool initialized = false;
     nvmlDevice_t device = nullptr;
 };
-
+#endif // DISABLE_GPUSTATS
 #endif // GPUSTATS_H
