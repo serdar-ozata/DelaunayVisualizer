@@ -10,7 +10,6 @@ The required libraries are:
 - NVML (optional, define NVML_LIB_PATH in CMakeLists.txt to the path of the library)
 
 You need to manually install the imgui: https://github.com/ocornut/imgui
-All other libraries should be handled by CMake.
 
 There is a "real type" option in the CMakeLists.txt: float or double (default). If you want to change it, you must also recompile the triangle library.
 Activate the -DSINGLE switch in the CMakeLists.txt to use float instead of double and run make distclean && make trilibrary inside the triangle directory.
